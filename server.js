@@ -7,7 +7,7 @@ import { z } from "zod";
 import { FormData } from "undici"; // 这行放在文件顶部的 import 里
 
 
-const widgetHtml = readFileSync("public/enhancer-widget.html", "utf8");
+const widgetHtml = readFileSync("public/enhancer-widget-v1.html", "utf8");
 
 // Render 上的中转服务地址
 const PHOTO_PROXY_URL =
@@ -272,3 +272,4 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
 });
+
