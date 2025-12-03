@@ -46,15 +46,23 @@ const replyWithResult = ({ originalUrl, enhancedUrl, status, message }) => ({
 async function callPhotoProxy(imageUrl) {
   const resp = await fetch(PHOTO_PROXY_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ image_url: imageUrl }),
   });
 
+  let data;
+  const text = await resp.text();
+
   if (!resp.ok) {
-    const text = await resp.text();
     throw new Error(`Proxy HTTP error: ${resp.status} ${text}`);
   }
-  const data = await resp.json();
+
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`Proxy returned invalid JSON: ${err.message ?? err}`);
+  }
+
   if (data.error) {
     throw new Error(`Proxy error: ${data.error}`);
   }
