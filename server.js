@@ -11,7 +11,9 @@ const widgetHtml = readFileSync("public/enhancer-widget.html", "utf8");
 const PHOTO_PROXY_URL =
   process.env.PHOTO_PROXY_URL ||
   "https://hitpaw-enhancer.onrender.com/enhance-photo";
-
+  
+// imgbb 的 API key
+const IMGBB_KEY = process.env.IMGBB_KEY;
 // tool 入参 schema
 const enhanceInputSchema = {
   image_url: z.string().url().describe("The URL of the image to enhance."),
@@ -63,6 +65,49 @@ async function callPhotoProxy(imageUrl) {
   return { originalUrl, enhancedUrl, status };
 }
 
+// 判断是不是 data:image/...;base64,... 这种格式
+function isBase64Image(str) {
+  return /^data:image\/[a-zA-Z0-9+]+;base64,/.test(str);
+}
+
+// 把 data URL 拆出纯 base64 部分
+function extractBase64Data(dataUrl) {
+  const match = dataUrl.match(/^data:image\/[a-zA-Z0-9+]+;base64,(.+)$/);
+  if (!match) {
+    throw new Error("Invalid data URL for image.");
+  }
+  return match[1]; // 真正的 base64 内容
+}
+
+// 上传 base64 到 imgbb，返回 https 图片地址
+async function uploadBase64ToImgbb(dataUrl) {
+  if (!IMGBB_KEY) {
+    throw new Error("IMGBB_KEY not configured on server.");
+  }
+
+  const base64 = extractBase64Data(dataUrl);
+
+  const form = new FormData();
+  form.append("key", IMGBB_KEY);
+  form.append("image", base64);
+
+  const resp = await fetch("https://api.imgbb.com/1/upload", {
+    method: "POST",
+    body: form
+  });
+
+  const json = await resp.json();
+
+  if (!resp.ok || !json.success) {
+    const msg = json.error?.message || resp.statusText || "Unknown imgbb error";
+    throw new Error("Image upload to imgbb failed: " + msg);
+  }
+
+  // 这是公网可访问的图片 URL
+  return json.data.url;
+}
+
+
 function createPhotoEnhancerServer() {
   const server = new McpServer({ name: "photo-enhancer-app", version: "0.1.0" });
 
@@ -85,54 +130,69 @@ function createPhotoEnhancerServer() {
   );
 
   // 2. 注册工具：enhance_photo :contentReference[oaicite:6]{index=6}
-  server.registerTool(
-    "enhance_photo",
-    {
-      title: "Enhance a photo with HitPaw",
-      description:
-        "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
-      inputSchema: enhanceInputSchema,
-      _meta: {
-        // 告诉 Apps SDK：用我们的组件显示结果 :contentReference[oaicite:7]{index=7}
-        "openai/outputTemplate": widgetUri,
-        "openai/toolInvocation/invoking": "Enhancing photo",
-        "openai/toolInvocation/invoked": "Enhanced photo",
-      },
+server.registerTool(
+  "enhance_photo",
+  {
+    title: "Enhance a photo with HitPaw",
+    description:
+      "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
+    inputSchema: {
+      image_url: z
+        .string()
+        .describe(
+          "Image URL or data URL (data:image/...;base64,...) of the image to enhance."
+        )
     },
-    async (args) => {
-      const imageUrl = args?.image_url;
-      if (!imageUrl) {
-        return replyWithResult({
-          originalUrl: "",
-          enhancedUrl: "",
-          status: "ERROR",
-          message: "Missing image_url.",
-        });
-      }
-
-      try {
-        const { originalUrl, enhancedUrl, status } = await callPhotoProxy(imageUrl);
-        const msg =
-          status === "COMPLETED"
-            ? "Photo enhanced successfully."
-            : `Photo enhance status: ${status}`;
-
-        return replyWithResult({
-          originalUrl: originalUrl || imageUrl,
-          enhancedUrl: enhancedUrl || "",
-          status,
-          message: msg,
-        });
-      } catch (err) {
-        return replyWithResult({
-          originalUrl: imageUrl,
-          enhancedUrl: "",
-          status: "ERROR",
-          message: err.message ?? "Failed to enhance photo.",
-        });
-      }
+    _meta: {
+      "openai/outputTemplate": widgetUri,
+      "openai/toolInvocation/invoking": "Enhancing photo",
+      "openai/toolInvocation/invoked": "Enhanced photo"
     }
-  );
+  },
+  async (args) => {
+    let imageUrl = args?.image_url;
+
+    if (!imageUrl) {
+      return replyWithResult({
+        originalUrl: "",
+        enhancedUrl: "",
+        status: "ERROR",
+        message: "Missing image_url."
+      });
+    }
+
+    try {
+      // 1. 如果 ChatGPT 传来的是 base64，就先上传 imgbb 获取 https URL
+      let finalUrl = imageUrl;
+      if (isBase64Image(imageUrl)) {
+        finalUrl = await uploadBase64ToImgbb(imageUrl);
+      }
+
+      // 2. 用真正的 URL 调你的中转服务
+      const { originalUrl, enhancedUrl, status } = await callPhotoProxy(finalUrl);
+
+      const msg =
+        status === "COMPLETED"
+          ? "Photo enhanced successfully."
+          : `Photo enhance status: ${status}`;
+
+      return replyWithResult({
+        originalUrl: originalUrl || finalUrl,
+        enhancedUrl: enhancedUrl || "",
+        status,
+        message: msg
+      });
+    } catch (err) {
+      return replyWithResult({
+        originalUrl: imageUrl,
+        enhancedUrl: "",
+        status: "ERROR",
+        message: err.message ?? "Failed to enhance photo."
+      });
+    }
+  }
+);
+
 
   return server;
 }
