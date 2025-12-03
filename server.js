@@ -3,7 +3,6 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
 import { FormData } from "undici"; // 这行放在文件顶部的 import 里
 
 
@@ -17,9 +16,18 @@ const PHOTO_PROXY_URL =
 // imgbb key（在运行 MCP server 的机器上要设好 IMGBB_KEY）
 const IMGBB_KEY = process.env.IMGBB_KEY;
   
-// tool 入参 schema
+// tool 入参 schema（兼容 https 链接和 data URL）
 const enhanceInputSchema = {
-  image_url: z.string().url().describe("The URL of the image to enhance."),
+  type: "object",
+  required: ["image_url"],
+  properties: {
+    image_url: {
+      type: "string",
+      description:
+        "Image URL to enhance. Supports https:// links or data:image/...;base64,... strings.",
+      pattern: "^(https?://|data:image/)",
+    },
+  },
 };
 
 
@@ -97,7 +105,7 @@ async function uploadBase64ToImgbb(dataUrl) {
 
   const resp = await fetch("https://api.imgbb.com/1/upload", {
     method: "POST",
-    body: form
+    body: form,
   });
 
   const json = await resp.json();
@@ -108,7 +116,7 @@ async function uploadBase64ToImgbb(dataUrl) {
   }
 
   // 这是公网可访问的图片 URL
-  console.log(json.data.url)
+  console.log(json.data.url);
   return json.data.url;
 }
 
@@ -135,71 +143,65 @@ function createPhotoEnhancerServer() {
   );
 
   // 2. 注册工具：enhance_photo :contentReference[oaicite:6]{index=6}
-server.registerTool(
-  "enhance_photo",
-  {
-    title: "Enhance a photo with HitPaw",
-    description:
-      "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
-    inputSchema: {
-      image_url: z
-        .string()
-        .describe(
-          "Image URL or data URL (data:image/...;base64,...) of the image to enhance."
-        )
-    },
-    _meta: {
-      "openai/outputTemplate": widgetUri,
-      "openai/toolInvocation/invoking": "Enhancing photo",
-      "openai/toolInvocation/invoked": "Enhanced photo"
-    }
-  },
-  async (args) => {
-    let imageUrl = args?.image_url;
-
-    if (!imageUrl) {
-      return replyWithResult({
-        originalUrl: "",
-        enhancedUrl: "",
-        status: "ERROR",
-        message: "Missing image_url."
-      });
-    }
-
-    try {
-      // 1. 如果 ChatGPT 传来的是 base64，就先上传 imgbb 获取 https URL
-      let finalUrl = imageUrl;
-      if (isBase64Image(imageUrl)) {
-        console.log("Got base64 image, uploading to imgbb...");
-        finalUrl = await uploadBase64ToImgbb(imageUrl);
-        console.log("Uploaded to imgbb, url =", finalUrl);
-      } else {
-        console.log("Got normal URL:", imageUrl);
+  server.registerTool(
+    "enhance_photo",
+    {
+      title: "Enhance a photo with HitPaw",
+      description:
+        "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
+      inputSchema: enhanceInputSchema,
+      _meta: {
+        "openai/outputTemplate": widgetUri,
+        "openai/toolInvocation/invoking": "Enhancing photo",
+        "openai/toolInvocation/invoked": "Enhanced photo"
       }
-      // 2. 用真正的 URL 调你的中转服务
-      const { originalUrl, enhancedUrl, status } = await callPhotoProxy(finalUrl);
+    },
+    async (args) => {
+      let imageUrl = args?.image_url;
 
-      const msg =
-        status === "COMPLETED"
-          ? "Photo enhanced successfully."
-          : `Photo enhance status: ${status}`;
+      if (!imageUrl) {
+        return replyWithResult({
+          originalUrl: "",
+          enhancedUrl: "",
+          status: "ERROR",
+          message: "Missing image_url."
+        });
+      }
 
-      return replyWithResult({
-        originalUrl: originalUrl || finalUrl,
-        enhancedUrl: enhancedUrl || "",
-        status,
-        message: msg
-      });
-    } catch (err) {
-      return replyWithResult({
-        originalUrl: imageUrl,
-        enhancedUrl: "",
-        status: "ERROR",
-        message: err.message ?? "Failed to enhance photo."
-      });
+      try {
+        // 1. 如果 ChatGPT 传来的是 base64，就先上传 imgbb 获取 https URL
+        let finalUrl = imageUrl;
+        if (isBase64Image(imageUrl)) {
+          console.log("Got base64 image, uploading to imgbb...");
+          finalUrl = await uploadBase64ToImgbb(imageUrl);
+          console.log("Uploaded to imgbb, url =", finalUrl);
+        } else {
+          console.log("Got normal URL:", imageUrl);
+        }
+        // 2. 用真正的 URL 调你的中转服务
+        const { originalUrl, enhancedUrl, status } = await callPhotoProxy(finalUrl);
+
+        const msg =
+          status === "COMPLETED"
+            ? "Photo enhanced successfully."
+            : `Photo enhance status: ${status}`;
+
+        return replyWithResult({
+          originalUrl: originalUrl || finalUrl,
+          enhancedUrl: enhancedUrl || "",
+          status,
+          message: msg
+        });
+      } catch (err) {
+        return replyWithResult({
+          originalUrl: imageUrl,
+          enhancedUrl: "",
+          status: "ERROR",
+          message: err.message ?? "Failed to enhance photo."
+        });
+      }
     }
-  }
-);
+  );
 
 
   return server;
@@ -210,7 +212,7 @@ const port = Number(process.env.PORT ?? 8787);
 const MCP_PATH = "/mcp";
 
 const httpServer = createServer(async (req, res) => {
-	console.log("Incoming request:", req.method, req.url);  // 👈 新增这一行
+  console.log("Incoming request:", req.method, req.url); // 👈 新增这一行
   if (!req.url) {
     res.writeHead(400).end("Missing URL");
     return;
@@ -219,18 +221,18 @@ const httpServer = createServer(async (req, res) => {
 
   // CORS 预检
   if (req.method === "OPTIONS" && url.pathname === MCP_PATH) {
-	  const requestHeaders = req.headers["access-control-request-headers"];
+    const requestHeaders = req.headers["access-control-request-headers"];
 
-	  res.writeHead(204, {
-		"Access-Control-Allow-Origin": "*",
-		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-		// 直接把浏览器请求预检里声明的头全部允许
-		"Access-Control-Allow-Headers": requestHeaders || "content-type",
-		"Access-Control-Expose-Headers": "Mcp-Session-Id",
-	  });
-	  res.end();
-	  return;
-	}
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+      // 直接把浏览器请求预检里声明的头全部允许
+      "Access-Control-Allow-Headers": requestHeaders || "content-type",
+      "Access-Control-Expose-Headers": "Mcp-Session-Id",
+    });
+    res.end();
+    return;
+  }
 
 
   // 健康检查
