@@ -218,15 +218,19 @@ const httpServer = createServer(async (req, res) => {
 
   // CORS 预检
   if (req.method === "OPTIONS" && url.pathname === MCP_PATH) {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-      "Access-Control-Allow-Headers": "content-type, mcp-session-id",
-      "Access-Control-Expose-Headers": "Mcp-Session-Id",
-    });
-    res.end();
-    return;
-  }
+	  const requestHeaders = req.headers["access-control-request-headers"];
+
+	  res.writeHead(204, {
+		"Access-Control-Allow-Origin": "*",
+		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+		// 直接把浏览器请求预检里声明的头全部允许
+		"Access-Control-Allow-Headers": requestHeaders || "content-type",
+		"Access-Control-Expose-Headers": "Mcp-Session-Id",
+	  });
+	  res.end();
+	  return;
+	}
+
 
   // 健康检查
   if (req.method === "GET" && url.pathname === "/") {
