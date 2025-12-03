@@ -4,16 +4,19 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { FormData } from "undici"; // 这行放在文件顶部的 import 里
+
 
 const widgetHtml = readFileSync("public/enhancer-widget.html", "utf8");
 
-// TODO: 改成你自己的 Render 中转服务地址
+// Render 上的中转服务地址
 const PHOTO_PROXY_URL =
   process.env.PHOTO_PROXY_URL ||
   "https://hitpaw-enhancer.onrender.com/enhance-photo";
-  
-// imgbb 的 API key
+
+// imgbb key（在运行 MCP server 的机器上要设好 IMGBB_KEY）
 const IMGBB_KEY = process.env.IMGBB_KEY;
+  
 // tool 入参 schema
 const enhanceInputSchema = {
   image_url: z.string().url().describe("The URL of the image to enhance."),
@@ -104,6 +107,7 @@ async function uploadBase64ToImgbb(dataUrl) {
   }
 
   // 这是公网可访问的图片 URL
+  console.log(json.data.url)
   return json.data.url;
 }
 
@@ -165,9 +169,12 @@ server.registerTool(
       // 1. 如果 ChatGPT 传来的是 base64，就先上传 imgbb 获取 https URL
       let finalUrl = imageUrl;
       if (isBase64Image(imageUrl)) {
+        console.log("Got base64 image, uploading to imgbb...");
         finalUrl = await uploadBase64ToImgbb(imageUrl);
+        console.log("Uploaded to imgbb, url =", finalUrl);
+      } else {
+        console.log("Got normal URL:", imageUrl);
       }
-
       // 2. 用真正的 URL 调你的中转服务
       const { originalUrl, enhancedUrl, status } = await callPhotoProxy(finalUrl);
 
