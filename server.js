@@ -1,0 +1,202 @@
+// server.js
+import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
+
+const widgetHtml = readFileSync("public/enhancer-widget.html", "utf8");
+
+// TODO: 改成你自己的 Render 中转服务地址
+const PHOTO_PROXY_URL =
+  process.env.PHOTO_PROXY_URL ||
+  "https://hitpaw-enhancer.onrender.com/enhance-photo";
+
+// tool 入参 schema
+const enhanceInputSchema = {
+  image_url: z.string().url().describe("The URL of the image to enhance."),
+};
+
+// 工具返回统一结构
+const replyWithResult = ({ originalUrl, enhancedUrl, status, message }) => ({
+  content: message ? [{ type: "text", text: message }] : [],
+  structuredContent: {
+    originalUrl,
+    enhancedUrl,
+    status,
+    message,
+  },
+});
+
+// 调用你自己的中转服务（它再去找 HitPaw）
+async function callPhotoProxy(imageUrl) {
+  const resp = await fetch(PHOTO_PROXY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_url: imageUrl }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Proxy HTTP error: ${resp.status} ${text}`);
+  }
+  const data = await resp.json();
+  if (data.error) {
+    throw new Error(`Proxy error: ${data.error}`);
+  }
+
+  // 这里对应你中转服务返回的结构：
+  // {
+  //   code: 200,
+  //   data: {
+  //     job_id,
+  //     status,
+  //     enhanced_url,
+  //     original_url,
+  //     raw: ...
+  //   }
+  // }
+  const status = data.data?.status ?? "COMPLETED";
+  const enhancedUrl = data.data?.enhanced_url;
+  const originalUrl = data.data?.original_url;
+
+  return { originalUrl, enhancedUrl, status };
+}
+
+function createPhotoEnhancerServer() {
+  const server = new McpServer({ name: "photo-enhancer-app", version: "0.1.0" });
+
+  // 1. 注册前端组件资源 :contentReference[oaicite:5]{index=5}
+  const widgetUri = "ui://widget/photo-enhancer.html";
+  server.registerResource(
+    "photo-enhancer-widget",
+    widgetUri,
+    {},
+    async () => ({
+      contents: [
+        {
+          uri: widgetUri,
+          mimeType: "text/html+skybridge",
+          text: widgetHtml,
+          _meta: { "openai/widgetPrefersBorder": true },
+        },
+      ],
+    })
+  );
+
+  // 2. 注册工具：enhance_photo :contentReference[oaicite:6]{index=6}
+  server.registerTool(
+    "enhance_photo",
+    {
+      title: "Enhance a photo with HitPaw",
+      description:
+        "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
+      inputSchema: enhanceInputSchema,
+      _meta: {
+        // 告诉 Apps SDK：用我们的组件显示结果 :contentReference[oaicite:7]{index=7}
+        "openai/outputTemplate": widgetUri,
+        "openai/toolInvocation/invoking": "Enhancing photo",
+        "openai/toolInvocation/invoked": "Enhanced photo",
+      },
+    },
+    async (args) => {
+      const imageUrl = args?.image_url;
+      if (!imageUrl) {
+        return replyWithResult({
+          originalUrl: "",
+          enhancedUrl: "",
+          status: "ERROR",
+          message: "Missing image_url.",
+        });
+      }
+
+      try {
+        const { originalUrl, enhancedUrl, status } = await callPhotoProxy(imageUrl);
+        const msg =
+          status === "COMPLETED"
+            ? "Photo enhanced successfully."
+            : `Photo enhance status: ${status}`;
+
+        return replyWithResult({
+          originalUrl: originalUrl || imageUrl,
+          enhancedUrl: enhancedUrl || "",
+          status,
+          message: msg,
+        });
+      } catch (err) {
+        return replyWithResult({
+          originalUrl: imageUrl,
+          enhancedUrl: "",
+          status: "ERROR",
+          message: err.message ?? "Failed to enhance photo.",
+        });
+      }
+    }
+  );
+
+  return server;
+}
+
+// 3. MCP HTTP server（照 Quickstart 模板）:contentReference[oaicite:8]{index=8}
+const port = Number(process.env.PORT ?? 8787);
+const MCP_PATH = "/mcp";
+
+const httpServer = createServer(async (req, res) => {
+  if (!req.url) {
+    res.writeHead(400).end("Missing URL");
+    return;
+  }
+  const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+
+  // CORS 预检
+  if (req.method === "OPTIONS" && url.pathname === MCP_PATH) {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+      "Access-Control-Allow-Headers": "content-type, mcp-session-id",
+      "Access-Control-Expose-Headers": "Mcp-Session-Id",
+    });
+    res.end();
+    return;
+  }
+
+  // 健康检查
+  if (req.method === "GET" && url.pathname === "/") {
+    res.writeHead(200, { "content-type": "text/plain" }).end("Photo enhancer MCP server");
+    return;
+  }
+
+  const MCP_METHODS = new Set(["POST", "GET", "DELETE"]);
+  if (url.pathname === MCP_PATH && req.method && MCP_METHODS.has(req.method)) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+
+    const server = createPhotoEnhancerServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      console.error("Error handling MCP request:", error);
+      if (!res.headersSent) {
+        res.writeHead(500).end("Internal server error");
+      }
+    }
+    return;
+  }
+
+  res.writeHead(404).end("Not Found");
+});
+
+httpServer.listen(port, () => {
+  console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
+});
