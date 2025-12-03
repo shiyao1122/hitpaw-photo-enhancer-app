@@ -22,6 +22,7 @@ const enhanceInputSchema = {
   image_url: z.string().url().describe("The URL of the image to enhance."),
 };
 
+
 // 工具返回统一结构
 const replyWithResult = ({ originalUrl, enhancedUrl, status, message }) => ({
   content: message ? [{ type: "text", text: message }] : [],
@@ -116,9 +117,9 @@ function createPhotoEnhancerServer() {
   const server = new McpServer({ name: "photo-enhancer-app", version: "0.1.0" });
 
   // 1. 注册前端组件资源 :contentReference[oaicite:5]{index=5}
-  const widgetUri = "ui://widget/photo-enhancer.html";
+  const widgetUri = "ui://widget/photo-enhancer-v1.html";
   server.registerResource(
-    "photo-enhancer-widget",
+    "photo-enhancer-widget-v1",
     widgetUri,
     {},
     async () => ({
@@ -272,4 +273,3 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
 });
-
