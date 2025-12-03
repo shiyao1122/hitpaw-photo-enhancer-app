@@ -18,6 +18,7 @@ const PHOTO_PROXY_URL =
 const IMGBB_KEY = process.env.IMGBB_KEY;
   
 // tool 入参 schema（兼容 https 链接和 data URL）
+
 const enhanceInputSchema = z.object({
   image_url: z
     .string({
