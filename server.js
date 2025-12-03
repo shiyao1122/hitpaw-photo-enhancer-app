@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 import { FormData } from "undici"; // 这行放在文件顶部的 import 里
 
 
@@ -17,18 +18,21 @@ const PHOTO_PROXY_URL =
 const IMGBB_KEY = process.env.IMGBB_KEY;
   
 // tool 入参 schema（兼容 https 链接和 data URL）
-const enhanceInputSchema = {
-  type: "object",
-  required: ["image_url"],
-  properties: {
-    image_url: {
-      type: "string",
-      description:
-        "Image URL to enhance. Supports https:// links or data:image/...;base64,... strings.",
-      pattern: "^(https?://|data:image/)",
-    },
-  },
-};
+
+const enhanceInputSchema = z.object({
+  image_url: z
+    .string({
+      required_error: "image_url is required",
+      invalid_type_error: "image_url must be a string",
+    })
+    .refine(
+      (value) => /^(https?:\/\/|data:image\/)/.test(value),
+      "Image URL must be an https:// link or data:image/...;base64,... string."
+    )
+    .describe(
+      "Image URL to enhance. Supports https:// links or data:image/...;base64,... strings."
+    ),
+});
 
 
 // 工具返回统一结构
