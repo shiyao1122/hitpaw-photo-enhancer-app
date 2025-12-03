@@ -209,6 +209,7 @@ const port = Number(process.env.PORT ?? 8787);
 const MCP_PATH = "/mcp";
 
 const httpServer = createServer(async (req, res) => {
+	console.log("Incoming request:", req.method, req.url);  // 👈 新增这一行
   if (!req.url) {
     res.writeHead(400).end("Missing URL");
     return;
