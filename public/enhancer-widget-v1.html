@@ -2,12 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Photo Enhancer</title>
     <style>
       :root {
         color: #0b0b0f;
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-          sans-serif;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       body {
         margin: 0;
@@ -15,167 +15,377 @@
         background: #f6f8fb;
       }
       main {
-        max-width: 520px;
+        max-width: 680px;
         margin: 0 auto;
         background: #fff;
         border-radius: 16px;
         padding: 16px;
         box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
       }
-      h2 {
-        margin: 0 0 12px;
-        font-size: 18px;
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
       }
+      h2 {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.2;
+      }
+      .pill {
+        font-size: 11px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: #3742fa;
+        border: 1px solid #e3e8ff;
+        white-space: nowrap;
+      }
+
       .grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 12px;
       }
+      @media (max-width: 560px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
       .card {
-        border-radius: 12px;
+        border-radius: 14px;
         background: #f2f4fb;
-        padding: 8px;
+        padding: 10px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 8px;
+        border: 1px solid #e7ebf7;
       }
       .card h3 {
         margin: 0;
-        font-size: 14px;
+        font-size: 13px;
+        color: #111827;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
       }
+      .hint {
+        font-size: 11px;
+        color: #6c768a;
+        font-weight: 500;
+      }
+
       .img-wrapper {
-        border-radius: 10px;
+        position: relative;
+        border-radius: 12px;
         overflow: hidden;
         background: #dde3f0;
         display: flex;
         align-items: center;
         justify-content: center;
-        min-height: 120px;
+        min-height: 160px;
       }
       img {
         max-width: 100%;
+        max-height: 360px;
         display: block;
       }
+
+      .placeholder {
+        font-size: 12px;
+        color: #556070;
+        padding: 14px;
+        text-align: center;
+      }
+
+      .skeleton {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, rgba(221,227,240,1) 0%, rgba(240,244,255,1) 50%, rgba(221,227,240,1) 100%);
+        background-size: 200% 200%;
+        animation: shimmer 1.2s ease-in-out infinite;
+      }
+      @keyframes shimmer {
+        0% { background-position: 0% 0%; }
+        100% { background-position: 200% 0%; }
+      }
+
       .status {
-        margin-top: 8px;
+        margin-top: 10px;
         font-size: 12px;
         color: #6c768a;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
       }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #c7cedd;
+      }
+      .dot.ok { background: #16a34a; }
+      .dot.warn { background: #f59e0b; }
+      .dot.err { background: #ef4444; }
+
       .buttons {
-        margin-top: 8px;
+        margin-top: 12px;
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
       }
-      .buttons a {
+      .btn {
         font-size: 12px;
-        padding: 6px 10px;
+        padding: 8px 10px;
         border-radius: 999px;
-        border: none;
+        border: 1px solid #d9def0;
         text-decoration: none;
         background: #111bf5;
         color: #fff;
+        cursor: pointer;
+        user-select: none;
+      }
+      .btn.secondary {
+        background: #ffffff;
+        color: #111827;
+      }
+      .btn:active { transform: translateY(1px); }
+      .btn[aria-disabled="true"] {
+        opacity: 0.55;
+        pointer-events: none;
+      }
+
+      .errorbox {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: #fff1f2;
+        border: 1px solid #fecdd3;
+        color: #9f1239;
+        font-size: 12px;
+        display: none;
+      }
+      .errorbox.show { display: block; }
+
+      .footer-note {
+        margin-top: 10px;
+        font-size: 11px;
+        color: #8a94a8;
       }
     </style>
   </head>
+
   <body>
     <main>
-      <h2>Photo Enhancer</h2>
+      <header>
+        <h2>Photo Enhancer</h2>
+        <span class="pill" id="status-pill">Waiting</span>
+      </header>
+
       <div class="grid">
         <div class="card">
-          <h3>Original</h3>
+          <h3>
+            Original
+            <span class="hint" id="orig-hint">—</span>
+          </h3>
           <div class="img-wrapper" id="original-box">
-            <span id="original-placeholder">Waiting for image...</span>
-            <img id="original-img" style="display: none" />
+            <div class="skeleton" id="orig-skel" style="display:none"></div>
+            <div class="placeholder" id="original-placeholder">Waiting for image…</div>
+            <img id="original-img" alt="Original image" style="display:none" />
           </div>
         </div>
+
         <div class="card">
-          <h3>Enhanced</h3>
+          <h3>
+            Enhanced
+            <span class="hint" id="enh-hint">—</span>
+          </h3>
           <div class="img-wrapper" id="enhanced-box">
-            <span id="enhanced-placeholder">Enhancing...</span>
-            <img id="enhanced-img" style="display: none" />
+            <div class="skeleton" id="enh-skel" style="display:block"></div>
+            <div class="placeholder" id="enhanced-placeholder">Enhancing…</div>
+            <img id="enhanced-img" alt="Enhanced image" style="display:none" />
           </div>
         </div>
       </div>
-      <div class="status" id="status-text"></div>
+
+      <div class="status">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text"></span>
+      </div>
+
+      <div class="errorbox" id="errorbox"></div>
+
       <div class="buttons" id="buttons"></div>
+
+      <div class="footer-note">
+        Tip: If an image doesn’t show, it’s usually blocked by widget CSP. Add the image host to <code>resource_domains</code>.
+      </div>
     </main>
 
     <script type="module">
-	  const originalImg = document.getElementById("original-img");
-	  const enhancedImg = document.getElementById("enhanced-img");
-	  const originalPlaceholder = document.getElementById("original-placeholder");
-	  const enhancedPlaceholder = document.getElementById("enhanced-placeholder");
-	  const statusText = document.getElementById("status-text");
-	  const buttons = document.getElementById("buttons");
+      const el = {
+        originalImg: document.getElementById("original-img"),
+        enhancedImg: document.getElementById("enhanced-img"),
+        originalPlaceholder: document.getElementById("original-placeholder"),
+        enhancedPlaceholder: document.getElementById("enhanced-placeholder"),
+        statusText: document.getElementById("status-text"),
+        statusPill: document.getElementById("status-pill"),
+        statusDot: document.getElementById("status-dot"),
+        buttons: document.getElementById("buttons"),
+        errorbox: document.getElementById("errorbox"),
+        origSkel: document.getElementById("orig-skel"),
+        enhSkel: document.getElementById("enh-skel"),
+        origHint: document.getElementById("orig-hint"),
+        enhHint: document.getElementById("enh-hint"),
+      };
 
-	  // 统一从 toolOutput 里“解包”出真正的数据
-	  function getPayloadFromToolOutput(rawToolOutput) {
-		if (!rawToolOutput) return null;
+      function getPayloadFromToolOutput(rawToolOutput) {
+        if (!rawToolOutput) return null;
+        if (rawToolOutput.structuredContent) return rawToolOutput.structuredContent; // ChatGPT
+        return rawToolOutput; // Inspector
+      }
 
-		// ChatGPT：raw = { structuredContent: {...}, content: [...] }
-		if (rawToolOutput.structuredContent) {
-		  return rawToolOutput.structuredContent;
-		}
+      function setStatus(kind, text) {
+        el.statusText.textContent = text || "";
+        el.statusDot.className = "dot" + (kind ? " " + kind : "");
+        el.statusPill.textContent = text ? text.split(" ")[0] : "Waiting";
+      }
 
-		// MCP Inspector：raw 就是 structuredContent
-		return rawToolOutput;
-	  }
+      function showError(msg) {
+        if (!msg) {
+          el.errorbox.classList.remove("show");
+          el.errorbox.textContent = "";
+          return;
+        }
+        el.errorbox.textContent = msg;
+        el.errorbox.classList.add("show");
+      }
 
-	  function renderFromToolOutput(rawToolOutput) {
-		const data = getPayloadFromToolOutput(rawToolOutput);
-		if (!data) return;
+      function hostnameOf(url) {
+        try { return new URL(url).hostname; } catch { return ""; }
+      }
 
-		const { originalUrl, enhancedUrl, status, message } = data;
+      async function openExternal(url) {
+        // Prefer ChatGPT host helper if available
+        try {
+          if (window.openai?.openExternal) return window.openai.openExternal(url);
+        } catch {}
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
 
-		buttons.innerHTML = "";
+      function addButton(label, url, variant = "primary", downloadName) {
+        const a = document.createElement("a");
+        a.className = "btn" + (variant === "secondary" ? " secondary" : "");
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = label;
 
-		if (originalUrl) {
-		  originalImg.src = originalUrl;
-		  originalImg.style.display = "block";
-		  originalPlaceholder.style.display = "none";
+        // use click handler to route through openExternal when possible
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          openExternal(url);
+        });
 
-		  const link = document.createElement("a");
-		  link.href = originalUrl;
-		  link.target = "_blank";
-		  link.textContent = "Open original";
-		  buttons.appendChild(link);
-		}
+        if (downloadName) {
+          // some browsers honor download for same-origin; for cross-origin it may not work
+          a.download = downloadName;
+        }
+        el.buttons.appendChild(a);
+      }
 
-		if (enhancedUrl) {
-		  enhancedImg.src = enhancedUrl;
-		  enhancedImg.style.display = "block";
-		  enhancedPlaceholder.style.display = "none";
+      function resetUI() {
+        el.buttons.innerHTML = "";
+        showError("");
 
-		  const link = document.createElement("a");
-		  link.href = enhancedUrl;
-		  link.target = "_blank";
-		  link.textContent = "Open enhanced";
-		  buttons.appendChild(link);
-		}
+        // Original
+        el.originalImg.style.display = "none";
+        el.originalImg.removeAttribute("src");
+        el.originalPlaceholder.style.display = "block";
+        el.origSkel.style.display = "none";
+        el.origHint.textContent = "—";
 
-		if (status || message) {
-		  statusText.textContent = `${status ?? ""} ${message ?? ""}`.trim();
-		} else {
-		  statusText.textContent = "";
-		}
-	  }
+        // Enhanced
+        el.enhancedImg.style.display = "none";
+        el.enhancedImg.removeAttribute("src");
+        el.enhancedPlaceholder.style.display = "block";
+        el.enhSkel.style.display = "block";
+        el.enhHint.textContent = "—";
 
-	  // 首次渲染：ChatGPT/Inspector 会注入 window.openai.toolOutput
-	  renderFromToolOutput(window.openai?.toolOutput);
+        setStatus("", "Waiting");
+      }
 
-	  // 后续 tool 调用：监听 openai:set_globals
-	  window.addEventListener(
-		"openai:set_globals",
-		(event) => {
-		  const globals = event.detail?.globals;
-		  if (!globals?.toolOutput) return;
-		  renderFromToolOutput(globals.toolOutput);
-		},
-		{ passive: true }
-	  );
-	</script>
+      function wireImageError(imgEl, label) {
+        imgEl.onerror = () => {
+          showError(`${label} image failed to load. If this is a CSP issue, add the image host to widget resource_domains.`);
+        };
+      }
 
+      wireImageError(el.originalImg, "Original");
+      wireImageError(el.enhancedImg, "Enhanced");
 
+      function renderFromToolOutput(rawToolOutput) {
+        const data = getPayloadFromToolOutput(rawToolOutput);
+        if (!data) return;
+
+        const { originalUrl, enhancedUrl, status, message } = data;
+
+        // Whenever we receive new toolOutput, clear previous UI then apply what we have
+        resetUI();
+
+        // status mapping
+        const normalized = (status || "").toUpperCase();
+        if (normalized === "ERROR") setStatus("err", message || "ERROR");
+        else if (normalized && normalized !== "COMPLETED") setStatus("warn", `${normalized} ${message || ""}`.trim());
+        else setStatus("ok", message || "COMPLETED");
+
+        if (originalUrl) {
+          el.originalImg.src = originalUrl;
+          el.originalImg.style.display = "block";
+          el.originalPlaceholder.style.display = "none";
+          el.origHint.textContent = hostnameOf(originalUrl) || "image";
+
+          addButton("Open original", originalUrl, "secondary");
+          addButton("Download original", originalUrl, "secondary", "original.png");
+        }
+
+        if (enhancedUrl) {
+          el.enhSkel.style.display = "none";
+          el.enhancedImg.src = enhancedUrl;
+          el.enhancedImg.style.display = "block";
+          el.enhancedPlaceholder.style.display = "none";
+          el.enhHint.textContent = hostnameOf(enhancedUrl) || "image";
+
+          addButton("Open enhanced", enhancedUrl, "primary");
+          addButton("Download enhanced", enhancedUrl, "secondary", "enhanced.jpg");
+        } else {
+          // if no enhancedUrl yet, keep skeleton and placeholder
+          el.enhSkel.style.display = "block";
+          el.enhancedPlaceholder.textContent = normalized === "ERROR" ? "Failed." : "Enhancing…";
+        }
+
+        // If tool returned an error message, show it prominently too
+        if (normalized === "ERROR" && message) showError(message);
+      }
+
+      // initial render
+      renderFromToolOutput(window.openai?.toolOutput);
+
+      // updates
+      window.addEventListener(
+        "openai:set_globals",
+        (event) => {
+          const globals = event.detail?.globals;
+          if (!globals?.toolOutput) return;
+          renderFromToolOutput(globals.toolOutput);
+        },
+        { passive: true }
+      );
+    </script>
   </body>
 </html>
