@@ -138,6 +138,36 @@ function createPhotoEnhancerServer() {
 
   // 1. 注册前端组件资源 :contentReference[oaicite:5]{index=5}
   const widgetUri = "ui://widget/photo-enhancer-v1.html";
+ const WIDGET_DOMAIN =
+    process.env.WIDGET_DOMAIN || "https://hitpaw-photo-enhancer-app-shiyao1122";
+
+  // 你的 UI 会展示 originalUrl/enhancedUrl 的图片
+  // 所以这些图片可能来自：
+  // - imgbb 的直链（常见是 i.ibb.co）
+  // - 你的 proxy / render 域名
+  // - HitPaw 返回的图片域名（如果有）
+  //
+  // 先给一个可用的最小集合：你的两个 render 域名 + imgbb 图片域名
+  // 如果后面发现 enhancedUrl/originalUrl 来自别的域名，把那个域名加进 resource_domains 即可。
+  const WIDGET_RESOURCE_DOMAINS = [
+    "https://hitpaw-photo-enhancer-app.onrender.com",
+    "https://hitpaw-enhancer.onrender.com",
+    "https://i.ibb.co",
+    "https://ibb.co",
+    "https://imgbb.com",
+  ];
+
+  // 如果你在 widget 里会点 “Open enhanced/original” 去打开外链，
+  // 有些情况下也会触发 “Check this link is safe” 提示；
+  // 把对应域名放进 connect_domains 通常可以避免/减少弹窗（社区经验）。:contentReference[oaicite:1]{index=1}
+  const WIDGET_CONNECT_DOMAINS = [
+    "https://hitpaw-photo-enhancer-app.onrender.com",
+    "https://hitpaw-enhancer.onrender.com",
+    "https://i.ibb.co",
+    "https://ibb.co",
+    "https://imgbb.com",
+  ];
+
   server.registerResource(
     "photo-enhancer-widget-v1",
     widgetUri,
@@ -148,7 +178,21 @@ function createPhotoEnhancerServer() {
           uri: widgetUri,
           mimeType: "text/html+skybridge",
           text: widgetHtml,
-          _meta: { "openai/widgetPrefersBorder": true },
+          _meta: {
+            "openai/widgetPrefersBorder": true,
+
+            // ✅ 必填：Widget CSP（提交审核要求）
+            "openai/widgetCSP": {
+              connect_domains: WIDGET_CONNECT_DOMAINS,
+              resource_domains: WIDGET_RESOURCE_DOMAINS,
+              // 你没用 iframe 就别加 frame_domains（加了更难过审）
+              // frame_domains: []
+            },
+
+            // ✅ 必填：Widget Domain（要唯一）
+            // 写成一个“像域名一样的 origin”，并保证全局唯一即可。:contentReference[oaicite:2]{index=2}
+            "openai/widgetDomain": WIDGET_DOMAIN,
+          },
         },
       ],
     })
@@ -287,3 +331,4 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
 });
+
