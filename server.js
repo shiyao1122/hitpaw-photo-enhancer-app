@@ -139,15 +139,13 @@ function createPhotoEnhancerServer() {
   // 1. 注册前端组件资源 :contentReference[oaicite:5]{index=5}
   const widgetUri = "ui://widget/photo-enhancer-v1.html";
  const WIDGET_DOMAIN =
-    process.env.WIDGET_DOMAIN || "https://hitpaw-photo-enhancer-app-shiyao1122";
+  process.env.WIDGET_DOMAIN || "https://hitpaw-photo-enhancer-app-shiyao1122";
 
-  // 图片真正来自的域名（必须）
 const WIDGET_RESOURCE_DOMAINS = [
   "https://i.ibb.co",
   "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
 ];
 
-// widget 可能“触达”的域名（稳妥）
 const WIDGET_CONNECT_DOMAINS = [
   "https://hitpaw-photo-enhancer-app.onrender.com",
   "https://hitpaw-enhancer.onrender.com",
@@ -155,35 +153,34 @@ const WIDGET_CONNECT_DOMAINS = [
   "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
 ];
 
-  server.registerResource(
-    "photo-enhancer-widget-v1",
-    widgetUri,
-    {},
-    async () => ({
-      contents: [
-        {
-          uri: widgetUri,
-          mimeType: "text/html+skybridge",
-          text: widgetHtml,
-          _meta: {
-            "openai/widgetPrefersBorder": true,
+server.registerResource(
+  "photo-enhancer-widget-v1",
+  widgetUri,
+  {},
+  async () => ({
+    contents: [
+      {
+        uri: widgetUri,
+        mimeType: "text/html+skybridge",
+        text: widgetHtml,
+        _meta: {
+          "openai/widgetPrefersBorder": true,
 
-            // ✅ 必填：Widget CSP（提交审核要求）
-            "openai/widgetCSP": {
-              connect_domains: WIDGET_CONNECT_DOMAINS,
-              resource_domains: WIDGET_RESOURCE_DOMAINS,
-              // 你没用 iframe 就别加 frame_domains（加了更难过审）
-              // frame_domains: []
-            },
-
-            // ✅ 必填：Widget Domain（要唯一）
-            // 写成一个“像域名一样的 origin”，并保证全局唯一即可。:contentReference[oaicite:2]{index=2}
-            "openai/widgetDomain": WIDGET_DOMAIN,
+          // ✅ 必填：Widget CSP
+          "openai/widgetCSP": {
+            connect_domains: WIDGET_CONNECT_DOMAINS,
+            resource_domains: WIDGET_RESOURCE_DOMAINS,
+            // 不用 iframe，别加 frame_domains
           },
+
+          // ✅ 必填：Widget Domain（唯一）
+          "openai/widgetDomain": WIDGET_DOMAIN,
         },
-      ],
-    })
-  );
+      },
+    ],
+  })
+);
+
 
   // 2. 注册工具：enhance_photo :contentReference[oaicite:6]{index=6}
   server.registerTool(
@@ -318,5 +315,6 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
 });
+
 
 
