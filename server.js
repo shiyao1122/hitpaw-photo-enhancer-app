@@ -1,26 +1,27 @@
 // server.js
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, readFile } from "node:fs/promises";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { FormData } from "undici";
 
-const widgetHtml = readFileSync("public/enhancer-widget-v1.html", "utf8");
+const widgetHtml = await readFileSync("public/enhancer-widget-v1.html", "utf8");
 
 // Render 上的中转服务地址
 const PHOTO_PROXY_URL =
   process.env.PHOTO_PROXY_URL ||
   "https://hitpaw-enhancer.onrender.com/enhance-photo";
 
-// imgbb key（在运行 MCP server 的机器上要设好 IMGBB_KEY）
+// imgbb key（必须）
 const IMGBB_KEY = process.env.IMGBB_KEY;
 
 // Widget domain（必须唯一，用于提交审核）
 const WIDGET_DOMAIN =
   process.env.WIDGET_DOMAIN || "https://hitpaw-photo-enhancer-app-shiyao1122";
 
-// tool 入参 schema（兼容 https 链接和 data URL）
+// ✅ 允许三类输入：https / data:image / /mnt/data
 const enhanceInputSchema = z.object({
   image_url: z
     .string({
@@ -28,23 +29,21 @@ const enhanceInputSchema = z.object({
       invalid_type_error: "image_url must be a string",
     })
     .refine(
-      (value) => /^(https?:\/\/|data:image\/)/.test(value),
-      "Image URL must be an https:// link or data:image/...;base64,... string."
+      (value) =>
+        /^https?:\/\//.test(value) ||
+        /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(value) ||
+        /^\/mnt\/data\//.test(value),
+      "Image URL must be an http(s) link, a data:image/...;base64,... string, or a /mnt/data/... file path."
     )
     .describe(
-      "Image URL to enhance. Supports https:// links or data:image/...;base64,... strings."
+      "Image input: supports http(s) URLs, data:image/...;base64,..., or /mnt/data/... file path (uploaded file)."
     ),
 });
 
 // 工具返回统一结构
 const replyWithResult = ({ originalUrl, enhancedUrl, status, message }) => ({
   content: message ? [{ type: "text", text: message }] : [],
-  structuredContent: {
-    originalUrl,
-    enhancedUrl,
-    status,
-    message,
-  },
+  structuredContent: { originalUrl, enhancedUrl, status, message },
 });
 
 // 调用你自己的中转服务（它再去找 HitPaw）
@@ -56,10 +55,7 @@ async function callPhotoProxy(imageUrl) {
   });
 
   const text = await resp.text();
-
-  if (!resp.ok) {
-    throw new Error(`Proxy HTTP error: ${resp.status} ${text}`);
-  }
+  if (!resp.ok) throw new Error(`Proxy HTTP error: ${resp.status} ${text}`);
 
   let data;
   try {
@@ -67,10 +63,7 @@ async function callPhotoProxy(imageUrl) {
   } catch (err) {
     throw new Error(`Proxy returned invalid JSON: ${err?.message ?? err}`);
   }
-
-  if (data.error) {
-    throw new Error(`Proxy error: ${data.error}`);
-  }
+  if (data.error) throw new Error(`Proxy error: ${data.error}`);
 
   const status = data.data?.status ?? "COMPLETED";
   const enhancedUrl = data.data?.enhanced_url;
@@ -79,45 +72,67 @@ async function callPhotoProxy(imageUrl) {
   return { originalUrl, enhancedUrl, status };
 }
 
-// 判断是不是 data:image/...;base64,... 这种格式
+function isHttpsUrl(str) {
+  return /^https:\/\//.test(str);
+}
+function isHttpUrl(str) {
+  return /^https?:\/\//.test(str);
+}
 function isBase64Image(str) {
   return /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(str);
 }
+function isMntPath(str) {
+  return /^\/mnt\/data\//.test(str);
+}
 
-// ✅ 更健壮：提取 base64 并清洗换行/空格（关键修复点）
+// ✅ 更健壮：提取 base64 并清洗换行/空格
 function extractBase64Data(dataUrl) {
-  if (!dataUrl.startsWith("data:image/")) {
-    throw new Error("Invalid data URL: must start with data:image/...");
-  }
   const marker = "base64,";
   const idx = dataUrl.indexOf(marker);
-  if (idx === -1) {
-    throw new Error("Invalid data URL: missing base64 marker");
-  }
-
-  // 取出 base64 部分，去掉所有空白（imgbb 对换行/空格非常敏感）
+  if (idx === -1) throw new Error("Invalid data URL: missing base64 marker");
   const base64 = dataUrl.slice(idx + marker.length).trim().replace(/\s+/g, "");
-
-  // 粗略校验：仅允许 base64 字符
   if (!/^[A-Za-z0-9+/=]+$/.test(base64)) {
     throw new Error("Invalid base64 string: contains non-base64 characters");
   }
-
-  // 可选：避免超大图片导致失败（你可按需要调整阈值）
-  // 10MB base64 大约 ~13.3MB 字符串，这里给个保守限制
+  // 可选：限制超大
   const MAX_BASE64_CHARS = 14_000_000;
   if (base64.length > MAX_BASE64_CHARS) {
     throw new Error("Image is too large to upload. Please use a smaller image.");
   }
-
   return base64;
+}
+
+// ✅ /mnt/data 文件 -> data:image/...;base64,...
+async function mntPathToDataUrl(filePath) {
+  // 基础安全：只允许 /mnt/data 下的文件
+  if (!isMntPath(filePath)) {
+    throw new Error("Only /mnt/data/... paths are supported.");
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const mime =
+    ext === ".png"
+      ? "image/png"
+      : ext === ".jpg" || ext === ".jpeg"
+      ? "image/jpeg"
+      : ext === ".webp"
+      ? "image/webp"
+      : ext === ".gif"
+      ? "image/gif"
+      : null;
+
+  if (!mime) {
+    throw new Error(`Unsupported image type: ${ext || "(no ext)"}`);
+  }
+
+  const buf = await readFile(filePath);
+  const b64 = buf.toString("base64");
+  return `data:${mime};base64,${b64}`;
 }
 
 // 上传 base64 到 imgbb，返回 https 图片地址
 async function uploadBase64ToImgbb(dataUrl) {
-  if (!IMGBB_KEY) {
-    throw new Error("IMGBB_KEY not configured on server.");
-  }
+  if (!IMGBB_KEY) throw new Error("IMGBB_KEY not configured on server.");
 
   const base64 = extractBase64Data(dataUrl);
 
@@ -133,19 +148,44 @@ async function uploadBase64ToImgbb(dataUrl) {
   const json = await resp.json().catch(() => null);
 
   if (!resp.ok || !json?.success) {
-    const msg =
-      json?.error?.message || resp.statusText || "Unknown imgbb error";
+    const msg = json?.error?.message || resp.statusText || "Unknown imgbb error";
     throw new Error("Image upload to imgbb failed: " + msg);
   }
 
-  // 公网可访问图片 URL（通常是 https://i.ibb.co/...)
-  return json.data.url;
+  return json.data.url; // 通常是 https://i.ibb.co/...
 }
 
-// ✅ 只允许 https URL 进入 UI（禁止 data URL）
-function ensureHttpsUrlOrEmpty(url) {
-  if (!url) return "";
-  return /^https:\/\//.test(url) ? url : "";
+// ✅ 强制：返回给 UI 的 URL 只允许 https
+function ensureHttpsOrEmpty(url) {
+  return isHttpsUrl(url) ? url : "";
+}
+
+// ✅ 把各种输入统一转换成 “可给 proxy 用的 https URL”
+// 返回：{ proxyUrl, originalUrlForUI }
+async function normalizeInputToHttps(imageInput) {
+  // 1) 已经是 http(s)
+  if (isHttpUrl(imageInput)) {
+    // proxy 一般能接受 https；如果是 http 你也可以强制拒绝
+    return {
+      proxyUrl: imageInput,
+      originalUrlForUI: ensureHttpsOrEmpty(imageInput),
+    };
+  }
+
+  // 2) /mnt/data/...
+  if (isMntPath(imageInput)) {
+    const dataUrl = await mntPathToDataUrl(imageInput);
+    const httpsUrl = await uploadBase64ToImgbb(dataUrl);
+    return { proxyUrl: httpsUrl, originalUrlForUI: httpsUrl };
+  }
+
+  // 3) base64 data url
+  if (isBase64Image(imageInput)) {
+    const httpsUrl = await uploadBase64ToImgbb(imageInput);
+    return { proxyUrl: httpsUrl, originalUrlForUI: httpsUrl };
+  }
+
+  throw new Error("Unsupported image input format.");
 }
 
 function createPhotoEnhancerServer() {
@@ -154,56 +194,43 @@ function createPhotoEnhancerServer() {
   // 1) 注册前端组件资源
   const widgetUri = "ui://widget/photo-enhancer-v1.html";
 
-  // ✅ 根据你给的真实样例：original 来自 i.ibb.co；enhanced 来自 aliyuncs OSS accelerate 域名
+  // ✅ 根据你样例：原图 i.ibb.co；增强图 aliyuncs
   const WIDGET_RESOURCE_DOMAINS = [
     "https://i.ibb.co",
     "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
   ];
 
   const WIDGET_CONNECT_DOMAINS = [
-    // 你的 MCP server 本身（一般不需要，但放上更稳）
     "https://hitpaw-photo-enhancer-app.onrender.com",
-    // 你的 proxy
     "https://hitpaw-enhancer.onrender.com",
-    // 图片域名（用于打开链接/可能的安全检查）
     "https://i.ibb.co",
     "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
   ];
 
-  server.registerResource(
-    "photo-enhancer-widget-v1",
-    widgetUri,
-    {},
-    async () => ({
-      contents: [
-        {
-          uri: widgetUri,
-          mimeType: "text/html+skybridge",
-          text: widgetHtml,
-          _meta: {
-            "openai/widgetPrefersBorder": true,
-
-            // ✅ 必填：Widget CSP
-            "openai/widgetCSP": {
-              connect_domains: WIDGET_CONNECT_DOMAINS,
-              resource_domains: WIDGET_RESOURCE_DOMAINS,
-            },
-
-            // ✅ 必填：Widget Domain（唯一）
-            "openai/widgetDomain": WIDGET_DOMAIN,
+  server.registerResource("photo-enhancer-widget-v1", widgetUri, {}, async () => ({
+    contents: [
+      {
+        uri: widgetUri,
+        mimeType: "text/html+skybridge",
+        text: widgetHtml,
+        _meta: {
+          "openai/widgetPrefersBorder": true,
+          "openai/widgetCSP": {
+            connect_domains: WIDGET_CONNECT_DOMAINS,
+            resource_domains: WIDGET_RESOURCE_DOMAINS,
           },
+          "openai/widgetDomain": WIDGET_DOMAIN,
         },
-      ],
-    })
-  );
+      },
+    ],
+  }));
 
-  // 2) 注册工具：enhance_photo
+  // 2) 注册工具
   server.registerTool(
     "enhance_photo",
     {
       title: "Enhance a photo with HitPaw",
-      description:
-        "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
+      description: "Enhance a photo using the HitPaw Photo Enhancer via the proxy service.",
       inputSchema: enhanceInputSchema,
       _meta: {
         "openai/outputTemplate": widgetUri,
@@ -212,8 +239,8 @@ function createPhotoEnhancerServer() {
       },
     },
     async (args) => {
-      const imageUrl = args?.image_url;
-      if (!imageUrl) {
+      const imageInput = args?.image_url;
+      if (!imageInput) {
         return replyWithResult({
           originalUrl: "",
           enhancedUrl: "",
@@ -223,38 +250,26 @@ function createPhotoEnhancerServer() {
       }
 
       try {
-        // 1) base64 -> imgbb -> https
-        let finalUrl = imageUrl;
-        let originalUrlForUI = "";
+        // ✅ 统一转成 https
+        const { proxyUrl, originalUrlForUI } = await normalizeInputToHttps(imageInput);
 
-        if (isBase64Image(imageUrl)) {
-          console.log("Got base64 image, uploading to imgbb...");
-          finalUrl = await uploadBase64ToImgbb(imageUrl);
-          originalUrlForUI = finalUrl; // ✅ UI 原图一定用 https
-          console.log("Uploaded to imgbb, url =", finalUrl);
-        } else {
-          console.log("Got normal URL:", imageUrl);
-          // ✅ 如果用户传的是 https，直接作为 UI 原图
-          originalUrlForUI = ensureHttpsUrlOrEmpty(imageUrl);
-        }
-
-        // 2) 调 proxy
-        const { originalUrl, enhancedUrl, status } = await callPhotoProxy(finalUrl);
+        // ✅ 调 proxy
+        const { originalUrl, enhancedUrl, status } = await callPhotoProxy(proxyUrl);
 
         const msg =
           status === "COMPLETED"
             ? "Photo enhanced successfully."
             : `Photo enhance status: ${status}`;
 
-        // ✅ 最终返回给 UI 的 URL：只允许 https；否则置空
         return replyWithResult({
-          originalUrl: ensureHttpsUrlOrEmpty(originalUrl) || originalUrlForUI,
-          enhancedUrl: ensureHttpsUrlOrEmpty(enhancedUrl),
+          // ✅ 只回 https（不回 data URL）
+          originalUrl: ensureHttpsOrEmpty(originalUrl) || originalUrlForUI,
+          enhancedUrl: ensureHttpsOrEmpty(enhancedUrl),
           status,
           message: msg,
         });
       } catch (err) {
-        // ✅ 关键：绝不把 data:image/... 返回给 UI
+        // ✅ 不要回传 data:image/... 给 UI
         return replyWithResult({
           originalUrl: "",
           enhancedUrl: "",
@@ -295,19 +310,17 @@ const httpServer = createServer(async (req, res) => {
 
   // 健康检查
   if (req.method === "GET" && url.pathname === "/") {
-    res
-      .writeHead(200, { "content-type": "text/plain" })
-      .end("Photo enhancer MCP server");
+    res.writeHead(200, { "content-type": "text/plain" }).end("Photo enhancer MCP server");
     return;
   }
 
-  // ✅ 可选：浏览器直接访问 /mcp 时给更友好提示
+  // 浏览器直接访问 /mcp 时给提示
   if (req.method === "GET" && url.pathname === MCP_PATH) {
     const accept = req.headers["accept"] || "";
     if (!accept.includes("text/event-stream")) {
       res.writeHead(406, { "content-type": "text/plain; charset=utf-8" });
       res.end(
-        "This is an MCP endpoint. Use an MCP client (ChatGPT / MCP Inspector). If using curl, add header: Accept: text/event-stream"
+        "This is an MCP endpoint. Use an MCP client (ChatGPT / MCP Inspector). For curl, add: Accept: text/event-stream"
       );
       return;
     }
@@ -334,9 +347,7 @@ const httpServer = createServer(async (req, res) => {
       await transport.handleRequest(req, res);
     } catch (error) {
       console.error("Error handling MCP request:", error);
-      if (!res.headersSent) {
-        res.writeHead(500).end("Internal server error");
-      }
+      if (!res.headersSent) res.writeHead(500).end("Internal server error");
     }
     return;
   }
@@ -345,7 +356,5 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(port, () => {
-  console.log(
-    `Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`
-  );
+  console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
 });
