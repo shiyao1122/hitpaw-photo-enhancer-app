@@ -344,7 +344,7 @@
         else if (normalized && normalized !== "COMPLETED") setStatus("warn", `${normalized} ${message || ""}`.trim());
         else setStatus("ok", message || "COMPLETED");
 
-        if (originalUrl) {
+        if (originalUrl && originalUrl.startsWith("https://")) {
           el.originalImg.src = originalUrl;
           el.originalImg.style.display = "block";
           el.originalPlaceholder.style.display = "none";
@@ -389,3 +389,4 @@
     </script>
   </body>
 </html>
+
