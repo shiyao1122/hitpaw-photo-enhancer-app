@@ -28,9 +28,15 @@ const WIDGET_DOMAIN =
 const enhanceInputSchema = z.object({
   image_url: z
     .string()
-    .optional()
+    .refine(
+      (v) => /^https?:\/\//.test(v) || /^\/mnt\/data\//.test(v),
+      "image_url must be a public http(s) URL or a /mnt/data/... file path."
+    )
     .describe(
-      "Image to enhance. If the user uploaded an image in this conversation, automatically use the uploaded image as input. If multiple images are uploaded, use the most recent one. Accepts https URLs or /mnt/data/... file paths."
+      "REQUIRED. The image to enhance. " +
+        "If the user has uploaded an image in this conversation, " +
+        "set image_url to the MOST RECENT uploaded image's /mnt/data/... path automatically. " +
+        "If multiple images are uploaded, use the most recent one."
     ),
 });
 
@@ -141,7 +147,10 @@ function createPhotoEnhancerServer() {
     {
       title: "Enhance Photo",
       description:
-        "Enhance an image using HitPaw. If the user uploaded an image, automatically enhance it.",
+        "Enhance a photo using HitPaw. " +
+        "You MUST set image_url. " +
+        "If the user uploaded an image, use the MOST RECENT uploaded image file path (/mnt/data/...). " +
+        "Otherwise ask the user to upload an image.",
       inputSchema: enhanceInputSchema,
       _meta: {
         "openai/outputTemplate": widgetUri,
@@ -227,3 +236,4 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`MCP server listening on :${port}`);
 });
+
