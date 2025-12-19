@@ -141,32 +141,19 @@ function createPhotoEnhancerServer() {
  const WIDGET_DOMAIN =
     process.env.WIDGET_DOMAIN || "https://hitpaw-photo-enhancer-app-shiyao1122";
 
-  // 你的 UI 会展示 originalUrl/enhancedUrl 的图片
-  // 所以这些图片可能来自：
-  // - imgbb 的直链（常见是 i.ibb.co）
-  // - 你的 proxy / render 域名
-  // - HitPaw 返回的图片域名（如果有）
-  //
-  // 先给一个可用的最小集合：你的两个 render 域名 + imgbb 图片域名
-  // 如果后面发现 enhancedUrl/originalUrl 来自别的域名，把那个域名加进 resource_domains 即可。
-  const WIDGET_RESOURCE_DOMAINS = [
-    "https://hitpaw-photo-enhancer-app.onrender.com",
-    "https://hitpaw-enhancer.onrender.com",
-    "https://i.ibb.co",
-    "https://ibb.co",
-    "https://imgbb.com",
-  ];
+  // 图片真正来自的域名（必须）
+const WIDGET_RESOURCE_DOMAINS = [
+  "https://i.ibb.co",
+  "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
+];
 
-  // 如果你在 widget 里会点 “Open enhanced/original” 去打开外链，
-  // 有些情况下也会触发 “Check this link is safe” 提示；
-  // 把对应域名放进 connect_domains 通常可以避免/减少弹窗（社区经验）。:contentReference[oaicite:1]{index=1}
-  const WIDGET_CONNECT_DOMAINS = [
-    "https://hitpaw-photo-enhancer-app.onrender.com",
-    "https://hitpaw-enhancer.onrender.com",
-    "https://i.ibb.co",
-    "https://ibb.co",
-    "https://imgbb.com",
-  ];
+// widget 可能“触达”的域名（稳妥）
+const WIDGET_CONNECT_DOMAINS = [
+  "https://hitpaw-photo-enhancer-app.onrender.com",
+  "https://hitpaw-enhancer.onrender.com",
+  "https://i.ibb.co",
+  "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
+];
 
   server.registerResource(
     "photo-enhancer-widget-v1",
@@ -331,4 +318,5 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`Photo enhancer MCP server listening on http://localhost:${port}${MCP_PATH}`);
 });
+
 
