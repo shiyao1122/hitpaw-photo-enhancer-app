@@ -94,8 +94,14 @@ function createPhotoEnhancerServer() {
           // - resource_domains: allow any https images (original image host varies)
           // - connect_domains: allow only your server and your proxy
           "openai/widgetCSP": {
-            resource_domains: ["https:"],
-            connect_domains: [PUBLIC_BASE_URL, "https://hitpaw-enhancer.onrender.com"],
+            resource_domains: [
+              PUBLIC_BASE_URL,
+              "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com"
+            ],
+            connect_domains: [
+              PUBLIC_BASE_URL,
+              "https://hitpaw-enhancer.onrender.com"
+            ]
           },
         },
       },
@@ -223,3 +229,4 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(port, () => {
   console.log(`Photo enhancer MCP server listening on ${PUBLIC_BASE_URL}${MCP_PATH}`);
 });
+
