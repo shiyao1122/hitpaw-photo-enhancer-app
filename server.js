@@ -13,7 +13,7 @@ import { z } from "zod";
 
 const widgetHtml = readFileSync("public/enhancer-widget-v1.html", "utf8");
 
-// Your HitPaw proxy service
+// HitPaw proxy service
 const PHOTO_PROXY_URL =
   process.env.PHOTO_PROXY_URL ||
   "https://hitpaw-enhancer.onrender.com/enhance-photo";
@@ -32,27 +32,34 @@ if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
 
 /* ===================== Schemas ===================== */
 
-// 1) upload_image tool input
-// Accepts https URL or data:image/...;base64,... (recommended when user uploaded image)
+// Tool 1: upload_image
+// Accepts sandbox:/mnt/data/..., /mnt/data/..., https://...
 const uploadInputSchema = z.object({
   file: z
     .string()
     .describe(
-      "Image file to upload. Prefer /mnt/data/... (uploaded file path) or a public https URL."
+      [
+        "Image to upload and convert into a PUBLIC https URL hosted by this app.",
+        "Accepted formats:",
+        "- sandbox:/mnt/data/... (preferred when user uploaded an image)",
+        "- /mnt/data/... (uploaded file path)",
+        "- https://... (public image URL)",
+        "Do NOT pass base64."
+      ].join("\n")
     ),
 });
 
-
-// 2) enhance_photo tool input (optional; model should call upload_image first if needed)
+// Tool 2: enhance_photo
 const enhanceInputSchema = z.object({
   image_url: z
     .string()
     .optional()
     .describe(
       [
-        "PUBLIC https URL of the image to enhance.",
-        "If user uploaded an image, FIRST call upload_image with that image, then call enhance_photo with the returned url.",
-        "Do NOT use /mnt/data/... with this remote tool."
+        "Image to enhance.",
+        "Prefer a PUBLIC https URL.",
+        "If you only have sandbox:/mnt/data/... or /mnt/data/..., you may pass it and the server will upload it first.",
+        "If the user uploaded an image, call upload_image first, then pass the returned url here."
       ].join("\n")
     ),
 });
@@ -78,57 +85,44 @@ function isHttpsUrl(v = "") {
 function isHttpUrl(v = "") {
   return /^https?:\/\//.test(v);
 }
-function isDataUrl(v = "") {
-  return /^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(v);
-}
 function isMntPath(v = "") {
   return /^\/mnt\/data\//.test(v);
 }
+function isSandboxMnt(v = "") {
+  return /^sandbox:\/mnt\/data\//.test(v);
+}
+
+/**
+ * ✅ 关键修复：远程 MCP 服务器不能 fetch sandbox: scheme。
+ * 将 sandbox:/mnt/data/... 归一化为 /mnt/data/...
+ * 然后交给平台做“路径->可下载URL”的重写/代理。
+ */
+function normalizeFileUrl(input) {
+  if (!input) return input;
+  if (input.startsWith("sandbox:")) {
+    return input.replace(/^sandbox:/, ""); // sandbox:/mnt/data/x -> /mnt/data/x
+  }
+  return input;
+}
+
 function ensureHttpsOrEmpty(v = "") {
   return isHttpsUrl(v) ? v : "";
 }
 
-function guessExtFromMime(mime) {
-  if (mime === "image/jpeg") return ".jpg";
-  if (mime === "image/png") return ".png";
-  if (mime === "image/webp") return ".webp";
-  if (mime === "image/gif") return ".gif";
-  return ".bin";
-}
-
-function parseDataUrl(dataUrl) {
-  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
-  if (!match) throw new Error("Invalid data URL.");
-  const mime = match[1];
-
-  let b64 = match[2].trim().replace(/\s+/g, "");
-  // base64url -> base64
-  b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
-  // padding
-  const mod = b64.length % 4;
-  if (mod === 2) b64 += "==";
-  else if (mod === 3) b64 += "=";
-  else if (mod === 1) throw new Error("Invalid base64 (likely truncated).");
-
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) {
-    throw new Error("Invalid base64 characters.");
-  }
-
-  const buf = Buffer.from(b64, "base64");
-  if (!buf || buf.length === 0) throw new Error("Invalid base64: decoded empty.");
-
-  // size guard (optional)
-  const MAX_BYTES = 10 * 1024 * 1024; // 10MB
-  if (buf.length > MAX_BYTES) {
-    throw new Error("Image too large. Please use a smaller image.");
-  }
-
-  return { mime, buf };
-}
-
 async function saveUploadBuffer(buf, mime, originalName = "upload") {
   const extFromName = path.extname(originalName);
-  const ext = extFromName || guessExtFromMime(mime);
+  const ext =
+    extFromName ||
+    (mime === "image/jpeg"
+      ? ".jpg"
+      : mime === "image/png"
+      ? ".png"
+      : mime === "image/webp"
+      ? ".webp"
+      : mime === "image/gif"
+      ? ".gif"
+      : ".bin");
+
   const id = crypto.randomBytes(16).toString("hex");
   const filename = `${id}${ext}`;
   const filePath = path.join(UPLOAD_DIR, filename);
@@ -142,29 +136,45 @@ async function saveUploadBuffer(buf, mime, originalName = "upload") {
   };
 }
 
-function normalizeFileUrl(input) {
-  if (input.startsWith("sandbox:")) {
-    // 关键修复：去掉 sandbox:
-    return input.replace(/^sandbox:/, "");
+/**
+ * 统一从任意“可定位图片”的输入中拿到 bytes 并入库到 /files
+ * 支持：
+ * - https://... （直接 fetch）
+ * - /mnt/data/... （平台会把它转换成可下载URL供 fetch）
+ * - sandbox:/mnt/data/... （先 normalize 再走上一条）
+ */
+async function fetchAndStoreImage(anyUrlOrPath) {
+  const normalized = normalizeFileUrl(anyUrlOrPath);
+
+  // 只允许这三类输入，避免误传导致 fetch 解析失败
+  const ok =
+    isHttpUrl(normalized) ||
+    isMntPath(normalized); // 注意：normalize 后 sandbox 会变成 /mnt/data
+
+  if (!ok) {
+    throw new Error(
+      `Unsupported image locator: ${anyUrlOrPath}. Use https://..., /mnt/data/..., or sandbox:/mnt/data/...`
+    );
   }
-  return input;
-}
 
-async function fetchAndStoreImage(input) {
-  const url = normalizeFileUrl(input);
-
-  const resp = await fetch(url);
+  const resp = await fetch(normalized);
   if (!resp.ok) {
-    throw new Error(`Failed to fetch image: ${resp.status} ${resp.statusText}`);
+    const txt = await resp.text().catch(() => "");
+    throw new Error(`Failed to fetch image: ${resp.status} ${resp.statusText} ${txt}`.trim());
   }
 
   const ct = resp.headers.get("content-type") || "";
   if (!ct.startsWith("image/")) {
-    throw new Error(`Not an image. content-type=${ct}`);
+    throw new Error(`Fetched content is not an image (content-type: ${ct || "unknown"})`);
   }
 
   const buf = Buffer.from(await resp.arrayBuffer());
-  return saveUploadBuffer(buf, ct.split(";")[0], "uploaded");
+
+  // optional size guard
+  const MAX_BYTES = 15 * 1024 * 1024;
+  if (buf.length > MAX_BYTES) throw new Error("Image too large. Please use a smaller image.");
+
+  return saveUploadBuffer(buf, ct.split(";")[0].trim(), "uploaded");
 }
 
 /* ===================== HitPaw Proxy Call ===================== */
@@ -179,7 +189,15 @@ async function callPhotoProxy(imageUrl) {
   const text = await resp.text();
   if (!resp.ok) throw new Error(`Proxy HTTP error: ${resp.status} ${text}`);
 
-  const data = JSON.parse(text);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Proxy returned non-JSON: ${text.slice(0, 300)}`);
+  }
+
+  if (data.error) throw new Error(`Proxy error: ${data.error}`);
+
   return {
     status: data.data?.status ?? "COMPLETED",
     originalUrl: data.data?.original_url,
@@ -190,7 +208,7 @@ async function callPhotoProxy(imageUrl) {
 /* ===================== MCP Server ===================== */
 
 function createPhotoEnhancerServer() {
-  const server = new McpServer({ name: "photo-enhancer-app", version: "1.2.0" });
+  const server = new McpServer({ name: "photo-enhancer-app", version: "2.0.0" });
 
   const widgetUri = "ui://widget/photo-enhancer-v1.html";
 
@@ -203,9 +221,10 @@ function createPhotoEnhancerServer() {
         text: widgetHtml,
         _meta: {
           "openai/widgetPrefersBorder": true,
+
+          // ✅ submission requires both
           "openai/widgetDomain": WIDGET_DOMAIN,
           "openai/widgetCSP": {
-            // must allow where images come from
             resource_domains: [
               PUBLIC_BASE_URL,
               "https://ai-hitpaw-us.oss-accelerate.aliyuncs.com",
@@ -221,54 +240,58 @@ function createPhotoEnhancerServer() {
     ],
   }));
 
-  /* -------- Tool 1: upload_image -------- */
+  // Tool 1: upload_image
   server.registerTool(
-  "upload_image",
-  {
-    title: "Upload Image",
-    description:
-      "Upload an image (prefer /mnt/data/... uploaded file path) and return a PUBLIC https URL hosted by this app.",
-    inputSchema: uploadInputSchema,
-  },
-  async (args) => {
-    const input = (args?.file || "").trim();
-    if (!input) {
-      return replyWithResult({
-        status: "ERROR",
-        message: "Missing file. Provide /mnt/data/... path or https URL.",
-        extra: { url: "" },
-      });
-    }
+    "upload_image",
+    {
+      title: "Upload Image",
+      description:
+        "Upload an image and return a PUBLIC https URL hosted by this app. " +
+        "Use this FIRST when the user uploaded an image in chat, then pass the returned url to enhance_photo. " +
+        "Input can be sandbox:/mnt/data/... or /mnt/data/... or https://...",
+      inputSchema: uploadInputSchema,
+      _meta: {
+        "openai/toolInvocation/invoking": "Uploading image",
+        "openai/toolInvocation/invoked": "Image uploaded",
+      },
+    },
+    async (args) => {
+      const input = (args?.file || "").trim();
 
-    try {
-      // 允许 /mnt/data/... 或 https://...
-      const saved = await fetchAndStoreImage(input);
-      return replyWithResult({
-        status: "COMPLETED",
-        message: "Uploaded.",
-        extra: { url: saved.url },
-      });
-    } catch (err) {
-      return replyWithResult({
-        status: "ERROR",
-        message: err?.message ?? "Upload failed.",
-        extra: { url: "" },
-      });
-    }
-  }
-);
+      if (!input) {
+        return replyWithResult({
+          status: "ERROR",
+          message: "Missing file. Provide sandbox:/mnt/data/... or /mnt/data/... or https://...",
+          extra: { url: "" },
+        });
+      }
 
-  /* -------- Tool 2: enhance_photo -------- */
+      try {
+        // ✅ 核心：支持 sandbox:/mnt/data/...
+        const saved = await fetchAndStoreImage(input);
+        return replyWithResult({
+          status: "COMPLETED",
+          message: "Uploaded.",
+          extra: { url: saved.url },
+        });
+      } catch (err) {
+        return replyWithResult({
+          status: "ERROR",
+          message: err?.message ?? "Upload failed.",
+          extra: { url: "" },
+        });
+      }
+    }
+  );
+
+  // Tool 2: enhance_photo
   server.registerTool(
     "enhance_photo",
     {
       title: "Enhance Photo (HitPaw)",
-      description: [
-        "Enhance image via HitPaw. You MUST provide a public https URL. ",
-        "If the user uploaded an image, you MUST call upload_image first to obtain a public https URL,",
-        "then call enhance_photo with that URL. ",
-        "Do NOT use Python or any local processing."
-      ].join(" "),
+      description:
+        "Enhance an image via HitPaw proxy. Prefer a PUBLIC https URL. " +
+        "If provided sandbox:/mnt/data/... or /mnt/data/... the server will upload it first, then enhance.",
       inputSchema: enhanceInputSchema,
       _meta: {
         "openai/outputTemplate": widgetUri,
@@ -289,36 +312,28 @@ function createPhotoEnhancerServer() {
         });
       }
 
-      if (isMntPath(input)) {
-        return replyWithResult({
-          originalUrl: "",
-          enhancedUrl: "",
-          status: "ERROR",
-          message:
-            "Cannot access /mnt/data/... on a remote server. Call upload_image first to obtain a public https URL.",
-        });
-      }
-
       try {
-        // 1) Normalize to public https URL
         let publicUrl = "";
 
+        // 1) already https
         if (isHttpsUrl(input)) {
           publicUrl = input;
-        } else if (isDataUrl(input)) {
-          // accept data url directly as a fallback: host it on /files then proceed
-          const { mime, buf } = parseDataUrl(input);
-          const saved = await saveUploadBuffer(buf, mime, "from-data-url");
+        }
+        // 2) http (store then use our https)
+        else if (isHttpUrl(input)) {
+          const saved = await fetchAndStoreImage(input);
           publicUrl = saved.url;
-        } else if (isHttpUrl(input)) {
-          // allow http -> store as https served from our /files
+        }
+        // 3) /mnt/data or sandbox:/mnt/data -> store then use our https
+        else if (isMntPath(input) || isSandboxMnt(input)) {
           const saved = await fetchAndStoreImage(input);
           publicUrl = saved.url;
         } else {
-          throw new Error("Unsupported input. Use https URL or data:image base64.");
+          throw new Error(
+            "Unsupported image_url. Use https://..., /mnt/data/..., or sandbox:/mnt/data/..."
+          );
         }
 
-        // 2) Call HitPaw proxy
         const { status, originalUrl, enhancedUrl } = await callPhotoProxy(publicUrl);
 
         return replyWithResult({
@@ -517,6 +532,3 @@ httpServer.listen(port, () => {
   console.log(`Server listening on ${PUBLIC_BASE_URL} (port ${port})`);
   console.log(`MCP: ${PUBLIC_BASE_URL}${MCP_PATH}`);
 });
-
-
-
