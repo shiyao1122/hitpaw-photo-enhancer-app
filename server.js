@@ -142,18 +142,29 @@ async function saveUploadBuffer(buf, mime, originalName = "upload") {
   };
 }
 
-// Fetch an https image and store it
-async function fetchAndStoreImage(anyUrlOrPath) {
-  // 关键：对远程 server 来说，/mnt/data/... 会被平台转换成可下载 URL
-  // 所以这里统一当 URL fetch
-  const resp = await fetch(anyUrlOrPath);
-  if (!resp.ok) throw new Error(`Failed to fetch image: ${resp.status} ${resp.statusText}`);
+function normalizeFileUrl(input) {
+  if (input.startsWith("sandbox:")) {
+    // 关键修复：去掉 sandbox:
+    return input.replace(/^sandbox:/, "");
+  }
+  return input;
+}
+
+async function fetchAndStoreImage(input) {
+  const url = normalizeFileUrl(input);
+
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch image: ${resp.status} ${resp.statusText}`);
+  }
 
   const ct = resp.headers.get("content-type") || "";
-  if (!ct.startsWith("image/")) throw new Error(`Not an image (content-type: ${ct || "unknown"})`);
+  if (!ct.startsWith("image/")) {
+    throw new Error(`Not an image. content-type=${ct}`);
+  }
 
   const buf = Buffer.from(await resp.arrayBuffer());
-  return saveUploadBuffer(buf, ct.split(";")[0].trim(), "uploaded");
+  return saveUploadBuffer(buf, ct.split(";")[0], "uploaded");
 }
 
 /* ===================== HitPaw Proxy Call ===================== */
@@ -506,5 +517,6 @@ httpServer.listen(port, () => {
   console.log(`Server listening on ${PUBLIC_BASE_URL} (port ${port})`);
   console.log(`MCP: ${PUBLIC_BASE_URL}${MCP_PATH}`);
 });
+
 
 
