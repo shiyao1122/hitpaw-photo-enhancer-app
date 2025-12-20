@@ -289,10 +289,10 @@ function createPhotoEnhancerServer() {
     {
       title: "Enhance Photo (HitPaw)",
       description: [
-        "Enhance an image via HitPaw proxy.",
-        "Input MUST ultimately be a PUBLIC https URL.",
-        "If user uploaded an image, FIRST call upload_image to get a public url, THEN call enhance_photo.",
-        "If you only have data:image/... base64, you may pass it directly and the server will host it before enhancing."
+        "Enhance image via HitPaw. You MUST provide a public https URL. ",
+        "If the user uploaded an image, you MUST call upload_image first to obtain a public https URL,",
+        "then call enhance_photo with that URL. ",
+        "Do NOT use Python or any local processing."
       ].join(" "),
       inputSchema: enhanceInputSchema,
       _meta: {
@@ -542,3 +542,4 @@ httpServer.listen(port, () => {
   console.log(`Server listening on ${PUBLIC_BASE_URL} (port ${port})`);
   console.log(`MCP: ${PUBLIC_BASE_URL}${MCP_PATH}`);
 });
+
