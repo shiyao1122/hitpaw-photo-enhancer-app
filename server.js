@@ -35,18 +35,13 @@ if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
 // 1) upload_image tool input
 // Accepts https URL or data:image/...;base64,... (recommended when user uploaded image)
 const uploadInputSchema = z.object({
-  image: z
+  file: z
     .string()
     .describe(
-      [
-        "Image to upload and convert into a PUBLIC https URL.",
-        "Accepts:",
-        "- data:image/...;base64,... (recommended for uploaded images)",
-        "- https://... (remote image URL)",
-        "Do NOT pass /mnt/data/... here because this server is remote and cannot access ChatGPT's local filesystem."
-      ].join("\n")
+      "Image file to upload. Prefer /mnt/data/... (uploaded file path) or a public https URL."
     ),
 });
+
 
 // 2) enhance_photo tool input (optional; model should call upload_image first if needed)
 const enhanceInputSchema = z.object({
@@ -148,16 +143,17 @@ async function saveUploadBuffer(buf, mime, originalName = "upload") {
 }
 
 // Fetch an https image and store it
-async function fetchAndStoreImage(url) {
-  const resp = await fetch(url);
+async function fetchAndStoreImage(anyUrlOrPath) {
+  // 关键：对远程 server 来说，/mnt/data/... 会被平台转换成可下载 URL
+  // 所以这里统一当 URL fetch
+  const resp = await fetch(anyUrlOrPath);
   if (!resp.ok) throw new Error(`Failed to fetch image: ${resp.status} ${resp.statusText}`);
 
   const ct = resp.headers.get("content-type") || "";
-  if (!ct.startsWith("image/")) {
-    throw new Error(`URL is not an image (content-type: ${ct || "unknown"})`);
-  }
+  if (!ct.startsWith("image/")) throw new Error(`Not an image (content-type: ${ct || "unknown"})`);
+
   const buf = Buffer.from(await resp.arrayBuffer());
-  return saveUploadBuffer(buf, ct.split(";")[0].trim(), "fetched");
+  return saveUploadBuffer(buf, ct.split(";")[0].trim(), "uploaded");
 }
 
 /* ===================== HitPaw Proxy Call ===================== */
@@ -216,72 +212,40 @@ function createPhotoEnhancerServer() {
 
   /* -------- Tool 1: upload_image -------- */
   server.registerTool(
-    "upload_image",
-    {
-      title: "Upload Image",
-      description: [
-        "Upload an image and return a PUBLIC https URL hosted by this app.",
-        "Use this FIRST when the user uploaded an image in chat, then pass the returned url to enhance_photo.",
-        "Do NOT pass /mnt/data/... because this tool runs on a remote server."
-      ].join(" "),
-      inputSchema: uploadInputSchema,
-      _meta: {
-        "openai/toolInvocation/invoking": "Uploading image",
-        "openai/toolInvocation/invoked": "Image uploaded",
-      },
-    },
-    async (args) => {
-      const input = (args?.image || "").trim();
-
-      try {
-        if (!input) {
-          return replyWithResult({
-            status: "ERROR",
-            message:
-              "No image provided. Provide a data:image/... base64 string or an https image URL.",
-            extra: { url: "" },
-          });
-        }
-
-        if (isMntPath(input)) {
-          // remote server cannot read it
-          return replyWithResult({
-            status: "ERROR",
-            message:
-              "Cannot access /mnt/data/... on a remote server. Please provide the image as data:image/... base64 or an https URL.",
-            extra: { url: "" },
-          });
-        }
-
-        let saved;
-        if (isDataUrl(input)) {
-          const { mime, buf } = parseDataUrl(input);
-          saved = await saveUploadBuffer(buf, mime, "uploaded");
-        } else if (isHttpUrl(input)) {
-          saved = await fetchAndStoreImage(input);
-        } else {
-          return replyWithResult({
-            status: "ERROR",
-            message:
-              "Unsupported image format. Use data:image/...;base64,... or https://...",
-            extra: { url: "" },
-          });
-        }
-
-        return replyWithResult({
-          status: "COMPLETED",
-          message: "Uploaded.",
-          extra: { url: saved.url },
-        });
-      } catch (err) {
-        return replyWithResult({
-          status: "ERROR",
-          message: err?.message ?? "Upload failed.",
-          extra: { url: "" },
-        });
-      }
+  "upload_image",
+  {
+    title: "Upload Image",
+    description:
+      "Upload an image (prefer /mnt/data/... uploaded file path) and return a PUBLIC https URL hosted by this app.",
+    inputSchema: uploadInputSchema,
+  },
+  async (args) => {
+    const input = (args?.file || "").trim();
+    if (!input) {
+      return replyWithResult({
+        status: "ERROR",
+        message: "Missing file. Provide /mnt/data/... path or https URL.",
+        extra: { url: "" },
+      });
     }
-  );
+
+    try {
+      // 允许 /mnt/data/... 或 https://...
+      const saved = await fetchAndStoreImage(input);
+      return replyWithResult({
+        status: "COMPLETED",
+        message: "Uploaded.",
+        extra: { url: saved.url },
+      });
+    } catch (err) {
+      return replyWithResult({
+        status: "ERROR",
+        message: err?.message ?? "Upload failed.",
+        extra: { url: "" },
+      });
+    }
+  }
+);
 
   /* -------- Tool 2: enhance_photo -------- */
   server.registerTool(
@@ -542,4 +506,5 @@ httpServer.listen(port, () => {
   console.log(`Server listening on ${PUBLIC_BASE_URL} (port ${port})`);
   console.log(`MCP: ${PUBLIC_BASE_URL}${MCP_PATH}`);
 });
+
 
